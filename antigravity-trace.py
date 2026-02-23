@@ -25,7 +25,7 @@ import hashlib
 import traceback
 from urllib.parse import urljoin
 from pathlib import Path
-from typing import Any, Awaitable, BinaryIO, Callable, List, Tuple, Literal, Iterator, cast
+from typing import Any, Awaitable, BinaryIO, Callable, List, Optional, Tuple, Literal, Iterator, cast
 
 # install_shim will symlink venv adjacent to the shim
 VENV_SITE = Path(__file__).resolve().parent / f"venv/lib/python{sys.version_info.major}.{sys.version_info.minor}/site-packages"
@@ -193,7 +193,7 @@ class Log:
             return
         request2, response2 = pretty(request), pretty(response)
         k = request2
-        k = cast(None | dict[str,Any], k['request'] if isinstance(k, dict) and 'request' in k else None)
+        k = cast(Optional[dict[str,Any]], k['request'] if isinstance(k, dict) and 'request' in k else None)
 
         # has the LLM given us a summary?
         summary: str | None = None
@@ -760,12 +760,19 @@ async def shim() -> None:
     args["--parent_pipe_path"] = [uds_path]
     extension_server_port, extension_server_cleanup = await start_extension_proxy(log, int(args["--extension_server_port"][0]))
     args["--extension_server_port"] = [str(extension_server_port)]
-    inference_url, inference_cleanup = await start_web_proxy(log, args["--inference_api_server_url"][0], 'INFERENCE')
-    args["--inference_api_server_url"] = [inference_url]
-    api_url, api_cleanup = await start_web_proxy(log, args["--api_server_url"][0], 'API')
-    args["--api_server_url"] = [api_url]
-    cloud_url, cloud_cleanup = await start_web_proxy(log, args["--cloud_code_endpoint"][0], 'CLOUD')
-    args["--cloud_code_endpoint"] = [cloud_url]
+    cleanups = []
+    if "--inference_api_server_url" in args:
+        inference_url, inference_cleanup = await start_web_proxy(log, args["--inference_api_server_url"][0], 'INFERENCE')
+        args["--inference_api_server_url"] = [inference_url]
+        cleanups.append(inference_cleanup)
+    if "--api_server_url" in args:
+        api_url, api_cleanup = await start_web_proxy(log, args["--api_server_url"][0], 'API')
+        args["--api_server_url"] = [api_url]
+        cleanups.append(api_cleanup)
+    if "--cloud_code_endpoint" in args:
+        cloud_url, cloud_cleanup = await start_web_proxy(log, args["--cloud_code_endpoint"][0], 'CLOUD')
+        args["--cloud_code_endpoint"] = [cloud_url]
+        cleanups.append(cloud_cleanup)
     # Some additional interception is installed within extension_proxy when it intercepts /LanguageServerStarted
 
     argv2 = [str(SRC / "bin/language_server_macos_arm"), *[arg for k, v in args.items() for arg in [k, *v]]]
@@ -828,9 +835,8 @@ async def shim() -> None:
         await stderr
         await stdin
     await extension_server_cleanup()
-    await inference_cleanup()
-    await api_cleanup()
-    await cloud_cleanup()
+    for c in cleanups:
+        await c()
     await uds_cleanup()
     sys.exit(returncode)
 
